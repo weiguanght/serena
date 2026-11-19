@@ -15,7 +15,8 @@ from sensai.util import logging
 
 from serena.agent import SerenaAgent
 from serena.config.context_mode import SerenaAgentContext
-from serena.config.serena_config import LanguageBackend, ModeSelectionDefinitionWithAddedModes, SerenaConfig
+from serena.config.serena_config import ModeSelectionDefinitionWithAddedModes, SerenaConfig
+from serena.language_backend import LanguageBackendRegistry
 from serena.tools import ToolCallError, ToolRegistry
 
 
@@ -102,7 +103,7 @@ def _create_agent(config: Mapping[str, Any]) -> SerenaAgent:
     serena_config = SerenaConfig.from_config_file().with_headless_mode_overrides()
     backend = config.get("language_backend")
     if backend:
-        serena_config.language_backend = LanguageBackend.from_str(str(backend))
+        serena_config.language_backend = LanguageBackendRegistry.get_instance().resolve(str(backend))
     tool_timeout = config.get("tool_timeout")
     if tool_timeout is not None:
         serena_config.tool_timeout = float(tool_timeout)
@@ -204,8 +205,8 @@ def _dispatch(agent: SerenaAgent, method: str, params: Mapping[str, Any]) -> Any
             "worker_pid": os.getpid(),
             "project": str(active_project.project_root) if active_project is not None else None,
             "active_tools": agent.get_active_tool_names(),
-            "language_backend": agent.get_language_backend().value,
-            "language_servers": [language.value for language in agent.get_active_language_server_ids()],
+            "language_backend": agent.get_language_backend().get_key(),
+            "language_servers": [language.get_key() for language in agent.get_active_language_server_ids()],
             "tasks": [task.name for task in agent.get_current_tasks()],
         }
     if method == "tool.list":

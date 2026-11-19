@@ -1381,7 +1381,7 @@ class DaemonCommands(AutoRegisteringGroup):
     @click.option("--context", type=str, default=DEFAULT_CONTEXT, show_default=True)
     @click.option("--mode", "default_modes", type=str, multiple=True, help=_MODES_EXPLANATION)
     @click.option("--add-mode", "added_modes", type=str, multiple=True, help=_ADD_MODES_EXPLANATION)
-    @click.option("--language-backend", type=click.Choice([lb.value for lb in LanguageBackend]), default=None)
+    @click.option("--language-backend", type=click.Choice(LanguageBackendRegistry.get_instance().get_keys()), default=None)
     @click.option("--log-level", type=click.Choice(["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]), default=None)
     @click.option("--tool-timeout", type=float, default=None)
     @click.option("--enable-tool", "enabled_tools", type=str, multiple=True, help="Enable an optional Serena tool for this daemon session.")

@@ -2,6 +2,7 @@
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from click.testing import CliRunner
@@ -181,6 +182,30 @@ def test_stop_daemon_escalates_to_verified_processes_when_request_times_out(tmp_
 def test_protocol_payload_is_json_object() -> None:
     payload = {"id": 1, "method": "tool.call", "params": {"tool": "read_file", "arguments": {}}}
     assert json.loads(json.dumps(payload)) == payload
+
+
+def test_worker_status_serializes_registered_backend_keys() -> None:
+    from serena.daemon_worker import _dispatch
+
+    class RegisteredId:
+        def __init__(self, key: str) -> None:
+            self.key = key
+
+        def get_key(self) -> str:
+            return self.key
+
+    agent = SimpleNamespace(
+        get_active_project=lambda: SimpleNamespace(project_root=Path("/project")),
+        get_active_tool_names=lambda: ["find_symbol"],
+        get_language_backend=lambda: RegisteredId("custom-backend"),
+        get_active_language_server_ids=lambda: [RegisteredId("custom-language")],
+        get_current_tasks=lambda: [SimpleNamespace(name="ready")],
+    )
+
+    status = _dispatch(agent, "status", {})
+
+    assert status["language_backend"] == "custom-backend"
+    assert status["language_servers"] == ["custom-language"]
 
 
 def test_tools_call_prints_raw_tool_result(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

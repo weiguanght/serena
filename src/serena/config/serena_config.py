@@ -38,7 +38,7 @@ from serena.constants import (
 from serena.util.inspection import compute_language_server_support_composition, contains_swift_and_clang_implementation_sources
 from serena.util.text_utils import GlobMatcher
 from serena.util.yaml import YamlCommentNormalisation, load_yaml, normalise_yaml_comments, save_yaml, transfer_yaml_comments
-from solidlsp.ls_config import LanguageServerIdLike, LanguageServerRegistry
+from solidlsp.ls_config import LanguageServerId, LanguageServerIdLike, LanguageServerRegistry
 
 from ..analytics import RegisteredTokenCountEstimator
 from ..language_backend import BuiltinLanguageBackend, LanguageBackend, LanguageBackendRegistry
