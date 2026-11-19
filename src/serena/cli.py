@@ -1058,6 +1058,74 @@ class ToolCommands(AutoRegisteringGroup):
 
     @staticmethod
     @click.command(
+        "call",
+        help="Call any registered Serena tool through the persistent project daemon.",
+        context_settings={"max_content_width": _MAX_CONTENT_WIDTH},
+    )
+    @click.argument("tool_name", type=str)
+    @click.argument("project_arg", type=PROJECT_TYPE, required=False, metavar="PROJECT")
+    @click.option(
+        "--project", "project_option", type=PROJECT_TYPE, default=None, help="Project path (defaults to the positional PROJECT or cwd)."
+    )
+    @click.option(
+        "--arguments",
+        "arguments_json",
+        "-a",
+        type=str,
+        default="{}",
+        show_default=True,
+        help="Tool arguments as a JSON object. Use '-' to read JSON from stdin.",
+    )
+    @click.option(
+        "--arguments-file", type=click.Path(exists=True, dir_okay=False), default=None, help="Read tool arguments from a JSON file."
+    )
+    @click.option("--timeout", type=float, default=300.0, show_default=True, help="Daemon request timeout in seconds.")
+    @click.option("--envelope", is_flag=True, help="Print the complete daemon response envelope instead of only the tool result.")
+    def call(
+        tool_name: str,
+        project_arg: str | None,
+        project_option: str | None,
+        arguments_json: str,
+        arguments_file: str | None,
+        timeout: float,
+        envelope: bool,
+    ) -> None:
+        """Call a registered tool without MCP."""
+        from serena.daemon import DaemonError, daemon_paths, request, response_result
+
+        if project_arg is not None and project_option is not None:
+            raise click.UsageError("PROJECT and --project cannot both be provided")
+        project = project_option or project_arg or find_project_root() or os.getcwd()
+        if arguments_file is not None:
+            arguments_json = Path(arguments_file).read_text(encoding="utf-8")
+        elif arguments_json == "-":
+            arguments_json = sys.stdin.read()
+        try:
+            arguments = json.loads(arguments_json)
+        except json.JSONDecodeError as exc:
+            raise click.UsageError(f"--arguments must contain valid JSON: {exc}") from exc
+        if not isinstance(arguments, dict):
+            raise click.UsageError("--arguments must be a JSON object")
+
+        paths = daemon_paths(project)
+        try:
+            response = request(paths, "tool.call", {"tool": tool_name, "arguments": arguments}, timeout=timeout)
+        except DaemonError as exc:
+            raise click.ClickException(f"{exc}. Start it with `serena daemon start {project}`.") from exc
+        try:
+            result = response_result(response)
+        except DaemonError as exc:
+            raise click.ClickException(str(exc)) from exc
+
+        if envelope:
+            click.echo(json.dumps(response, ensure_ascii=False, indent=2))
+        elif isinstance(result, str):
+            click.echo(result)
+        else:
+            click.echo(json.dumps(result, ensure_ascii=False))
+
+    @staticmethod
+    @click.command(
         "list",
         help="Prints an overview of the tools that are active by default (not just the active ones for your project). For viewing all tools, pass `--all / -a`",
         context_settings={"max_content_width": _MAX_CONTENT_WIDTH},
@@ -1065,10 +1133,49 @@ class ToolCommands(AutoRegisteringGroup):
     @click.option("--quiet", "-q", is_flag=True)
     @click.option("--all", "-a", "include_optional", is_flag=True, help="List all tools, including those not enabled by default.")
     @click.option("--only-optional", is_flag=True, help="List only optional tools (those not enabled by default).")
-    def list(quiet: bool = False, include_optional: bool = False, only_optional: bool = False) -> None:
+    @click.option("--project", type=PROJECT_TYPE, default=None, help="Query availability from a running project daemon.")
+    @click.option("--json", "as_json", is_flag=True, help="Print a JSON tool list.")
+    def list(
+        quiet: bool = False,
+        include_optional: bool = False,
+        only_optional: bool = False,
+        project: str | None = None,
+        as_json: bool = False,
+    ) -> None:
         from serena.tools import ToolRegistry
 
+        if project is not None:
+            from serena.daemon import DaemonError, daemon_paths, request, response_result
+
+            try:
+                response = request(daemon_paths(project), "tool.list")
+            except DaemonError as exc:
+                raise click.ClickException(f"{exc}. Start it with `serena daemon start {project}`.") from exc
+            try:
+                tools = response_result(response)
+            except DaemonError as exc:
+                raise click.ClickException(str(exc)) from exc
+            if as_json:
+                click.echo(json.dumps(tools, ensure_ascii=False, indent=2))
+            elif quiet:
+                for tool in tools:
+                    click.echo(tool["name"])
+            else:
+                for tool in tools:
+                    state = "active" if tool.get("active") else "inactive"
+                    click.echo(f"{tool['name']}\t{state}")
+            return
+
         tool_registry = ToolRegistry()
+        if as_json:
+            if only_optional:
+                names = tool_registry.get_tool_names_optional()
+            elif include_optional:
+                names = tool_registry.get_tool_names()
+            else:
+                names = tool_registry.get_tool_names_default_enabled()
+            click.echo(json.dumps(sorted(names), ensure_ascii=False))
+            return
         if quiet:
             if only_optional:
                 tool_names = tool_registry.get_tool_names_optional()
@@ -1089,9 +1196,27 @@ class ToolCommands(AutoRegisteringGroup):
     )
     @click.argument("tool_name", type=str)
     @click.option("--context", type=str, default=None, help="Context name or path to context file.")
-    def description(tool_name: str, context: str | None = None) -> None:
+    @click.option("--project", type=PROJECT_TYPE, default=None, help="Use a running daemon for project-specific availability and schema.")
+    @click.option("--json", "as_json", is_flag=True, help="Print name, description, schema, and availability as JSON.")
+    def description(tool_name: str, context: str | None = None, project: str | None = None, as_json: bool = False) -> None:
+        if project is not None:
+            from serena.daemon import DaemonError, daemon_paths, request, response_result
+
+            try:
+                response = request(daemon_paths(project), "tool.describe", {"tool": tool_name})
+            except DaemonError as exc:
+                raise click.ClickException(f"{exc}. Start it with `serena daemon start {project}`.") from exc
+            try:
+                result = response_result(response)
+            except DaemonError as exc:
+                raise click.ClickException(str(exc)) from exc
+            if as_json:
+                click.echo(json.dumps(result, ensure_ascii=False, indent=2))
+            else:
+                click.echo(result.get("description", ""))
+            return
+
         from serena.agent import SerenaAgent
-        from serena.mcp import SerenaMCPFactory
 
         # Load the context
         serena_context = None
@@ -1104,8 +1229,166 @@ class ToolCommands(AutoRegisteringGroup):
             context=serena_context,
         )
         tool = agent.get_tool_by_name(tool_name)
-        mcp_tool = SerenaMCPFactory.make_mcp_tool(tool)
-        click.echo(mcp_tool.description)
+        if as_json:
+            metadata = tool.get_apply_fn_metadata(structured_output=False)
+            click.echo(
+                json.dumps(
+                    {
+                        "name": tool_name,
+                        "description": tool.get_apply_docstring(),
+                        "parameters": metadata.arg_model.model_json_schema(),
+                        "readonly": tool.is_readonly(),
+                        "symbolic": tool.is_symbolic(),
+                        "can_edit": tool.can_edit(),
+                        "aliases": tool.get_param_aliases(),
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+        else:
+            click.echo(tool.get_apply_docstring())
+        agent.on_shutdown()
+
+
+class DaemonCommands(AutoRegisteringGroup):
+    """Manage a persistent native Serena daemon for one project."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            name="daemon",
+            help="Start, inspect, query, and stop Serena's persistent native daemon.",
+        )
+
+    @staticmethod
+    @click.command("build", help="Build the Rust daemon binary used by `serena daemon start`.")
+    @click.option("--debug", is_flag=True, help="Build an unoptimized debug binary.")
+    def build(debug: bool) -> None:
+        from serena.daemon import DaemonError, build_native_binary
+
+        try:
+            binary = build_native_binary(release=not debug)
+        except DaemonError as exc:
+            raise click.ClickException(str(exc)) from exc
+        click.echo(str(binary))
+
+    @staticmethod
+    @click.command("start", help="Start a persistent daemon for PROJECT and return when it is ready.")
+    @click.argument("project", type=PROJECT_TYPE, required=False, default=None)
+    @click.option("--context", type=str, default=DEFAULT_CONTEXT, show_default=True)
+    @click.option("--mode", "default_modes", type=str, multiple=True, help=_MODES_EXPLANATION)
+    @click.option("--add-mode", "added_modes", type=str, multiple=True, help=_ADD_MODES_EXPLANATION)
+    @click.option("--language-backend", type=click.Choice([lb.value for lb in LanguageBackend]), default=None)
+    @click.option("--log-level", type=click.Choice(["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]), default=None)
+    @click.option("--tool-timeout", type=float, default=None)
+    @click.option("--enable-tool", "enabled_tools", type=str, multiple=True, help="Enable an optional Serena tool for this daemon session.")
+    @click.option(
+        "--configured-tools-only",
+        is_flag=True,
+        help="Do not automatically enable local diagnostics, live hierarchy, and Xcode IndexStore tools.",
+    )
+    @click.option(
+        "--startup-timeout",
+        type=click.FloatRange(min=0.1),
+        default=120.0,
+        show_default=True,
+        help="Seconds to wait for project activation and language-server startup.",
+    )
+    @click.option("--foreground", is_flag=True, help="Keep the native daemon attached to this terminal.")
+    @click.option("--no-build", is_flag=True, help="Fail instead of auto-building the Rust daemon binary.")
+    def start(
+        project: str | None,
+        context: str,
+        default_modes: tuple[str, ...],
+        added_modes: tuple[str, ...],
+        language_backend: str | None,
+        log_level: str | None,
+        tool_timeout: float | None,
+        enabled_tools: tuple[str, ...],
+        configured_tools_only: bool,
+        startup_timeout: float,
+        foreground: bool,
+        no_build: bool,
+    ) -> None:
+        from serena.daemon import DEFAULT_DAEMON_OPTIONAL_TOOLS, DaemonError, daemon_paths, daemon_status, start_native_daemon
+
+        try:
+            project = project or find_project_root() or os.getcwd()
+            paths = daemon_paths(project)
+            session_tools = tuple(dict.fromkeys([*(() if configured_tools_only else DEFAULT_DAEMON_OPTIONAL_TOOLS), *enabled_tools]))
+            before = daemon_status(paths)
+            process = start_native_daemon(
+                paths,
+                context=context,
+                default_modes=default_modes,
+                added_modes=added_modes,
+                language_backend=language_backend,
+                log_level=log_level,
+                tool_timeout=tool_timeout,
+                enabled_tools=session_tools,
+                foreground=foreground,
+                auto_build=not no_build,
+                startup_timeout=startup_timeout,
+            )
+            status = daemon_status(paths, timeout=2.0) if not foreground else {"running": process is not None}
+        except DaemonError as exc:
+            raise click.ClickException(str(exc)) from exc
+
+        if process is None:
+            reused_status = status if not foreground else before
+            click.echo(json.dumps({"started": False, "already_running": True, **reused_status}, ensure_ascii=False))
+            return
+        if foreground:
+            assert process is not None
+            click.echo(json.dumps({"started": True, "foreground": True, "pid": process.pid}, ensure_ascii=False))
+            process.wait()
+            return
+        click.echo(json.dumps({"started": True, **status}, ensure_ascii=False))
+
+    @staticmethod
+    @click.command("status", help="Print the status of the daemon for PROJECT.")
+    @click.argument("project", type=PROJECT_TYPE, required=False, default=None)
+    def status(project: str | None) -> None:
+        from serena.daemon import daemon_paths, daemon_status
+
+        project = project or find_project_root() or os.getcwd()
+        result = daemon_status(daemon_paths(project))
+        click.echo(json.dumps(result, ensure_ascii=False, indent=2))
+
+    @staticmethod
+    @click.command("stop", help="Gracefully stop the daemon for PROJECT; safe to repeat.")
+    @click.argument("project", type=PROJECT_TYPE, required=False, default=None)
+    @click.option("--timeout", type=float, default=10.0, show_default=True)
+    def stop(project: str | None, timeout: float) -> None:
+        from serena.daemon import DaemonError, daemon_paths, stop_daemon
+
+        try:
+            project = project or find_project_root() or os.getcwd()
+            result = stop_daemon(daemon_paths(project), timeout=timeout)
+        except DaemonError as exc:
+            raise click.ClickException(str(exc)) from exc
+        click.echo(json.dumps(result, ensure_ascii=False))
+
+    @staticmethod
+    @click.command("request", help="Send a raw daemon protocol request from a JSON object.")
+    @click.argument("project", type=PROJECT_TYPE, required=False, default=None)
+    @click.option("--json", "request_json", required=True, help='Request object, e.g. {"method":"ping","params":{}}.')
+    @click.option("--timeout", type=float, default=300.0, show_default=True)
+    def raw_request(project: str | None, request_json: str, timeout: float) -> None:
+        from serena.daemon import DaemonError, daemon_paths, request
+
+        try:
+            project = project or find_project_root() or os.getcwd()
+            payload = json.loads(request_json)
+            if not isinstance(payload, dict):
+                raise ValueError("request must be a JSON object")
+            method = payload.get("method")
+            if not isinstance(method, str):
+                raise ValueError("request.method must be a string")
+            result = request(daemon_paths(project), method, payload.get("params") or {}, timeout=timeout)
+        except (DaemonError, ValueError, json.JSONDecodeError) as exc:
+            raise click.ClickException(str(exc)) from exc
+        click.echo(json.dumps(result, ensure_ascii=False, indent=2))
 
 
 class MemoryCommands(AutoRegisteringGroup):
@@ -1503,17 +1786,204 @@ class PromptCommands(AutoRegisteringGroup):
         click.echo(SerenaPromptFactory().create_cc_system_prompt_override())
 
 
+class XcodeIndexCommands(AutoRegisteringGroup):
+    """Group for local Xcode IndexStore graph commands."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            name="xcode-index",
+            help="Build and query a local compiler-accurate Swift/Objective-C call graph. MCP is not required.",
+        )
+
+    @staticmethod
+    def _service(project: str):
+        from serena.xcode_index import XcodeIndexService
+
+        root = str(Path(project).expanduser().resolve())
+        if not os.path.isdir(root):
+            raise click.ClickException(f"Project directory does not exist: {root}")
+        # The graph CLI is intentionally standalone.  Loading the global
+        # Serena config here would scan every registered project (and can emit
+        # unrelated warnings) even though this command only needs the selected
+        # project's local ``.serena/project.yml`` settings.
+        return XcodeIndexService.from_path(root, SerenaConfig())
+
+    @staticmethod
+    def _echo(value: Any) -> None:
+        from dataclasses import asdict, is_dataclass
+
+        if is_dataclass(value):
+            value = asdict(value)
+        click.echo(json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True))
+
+    @staticmethod
+    @click.command("status", help="Show graph counts and whether the Xcode snapshot is current.")
+    @click.argument("project", type=click.Path(exists=True, file_okay=False), default=os.getcwd(), required=False)
+    @click.option("--database", type=click.Path(dir_okay=False), default=None, help="Override the SQLite graph path.")
+    def status(project: str, database: str | None) -> None:
+        service = XcodeIndexCommands._service(project)
+        with service.graph(database) as graph:
+            XcodeIndexCommands._echo(graph.status())
+
+    @staticmethod
+    @click.command("refresh", help="Read an Xcode DataStore and atomically refresh the SQLite graph.")
+    @click.argument("project", type=click.Path(exists=True, file_okay=False), default=os.getcwd(), required=False)
+    @click.option("--store", type=click.Path(exists=True, file_okay=False), default=None, help="Xcode Index.noindex/DataStore path.")
+    @click.option("--database", type=click.Path(dir_okay=False), default=None, help="Override the SQLite graph path.")
+    @click.option("--prefix-map", multiple=True, help="Map indexed paths with remote=local syntax; may be repeated.")
+    @click.option("--library", type=click.Path(exists=True, dir_okay=False), default=None, help="Override libIndexStore.dylib.")
+    def refresh(project: str, store: str | None, database: str | None, prefix_map: tuple[str, ...], library: str | None) -> None:
+        from solidlsp.indexstore import IndexStoreError
+
+        service = XcodeIndexCommands._service(project)
+        try:
+            store_path = service.resolve_store_path(store)
+            with service.graph(database) as graph:
+                result = graph.refresh_from_store(
+                    store_path,
+                    service.project_root,
+                    prefix_mappings=service.prefix_mappings(prefix_map),
+                    library_path=library or service.library_path(),
+                )
+                status_value = graph.status()
+            XcodeIndexCommands._echo(
+                {
+                    "status": "refreshed",
+                    "store_path": result.store_path,
+                    "database_path": status_value.database_path,
+                    "units": result.unit_count,
+                    "records": result.record_count,
+                    "occurrences": len(result.occurrences),
+                    "calls": result.call_count,
+                    "edges": status_value.edges,
+                    "fingerprint": result.fingerprint,
+                }
+            )
+        except (IndexStoreError, OSError, ValueError) as exc:
+            raise click.ClickException(str(exc)) from exc
+
+    @staticmethod
+    @click.command("symbols", help="Resolve an exact compiler symbol name or USR.")
+    @click.argument("query")
+    @click.argument("project", type=click.Path(exists=True, file_okay=False), default=os.getcwd(), required=False)
+    @click.option("--database", type=click.Path(dir_okay=False), default=None)
+    @click.option("--file", "file_path", default=None, help="Disambiguate by source file.")
+    def symbols(query: str, project: str, database: str | None, file_path: str | None) -> None:
+        from dataclasses import asdict
+
+        service = XcodeIndexCommands._service(project)
+        with service.graph(database) as graph:
+            XcodeIndexCommands._echo([asdict(symbol) for symbol in graph.resolve_symbols(query, file_path=file_path)])
+
+    @staticmethod
+    def _direct_query(direction: str, query: str, project: str, database: str | None, file_path: str | None, limit: int) -> None:
+        service = XcodeIndexCommands._service(project)
+        try:
+            with service.graph(database) as graph:
+                result = (
+                    graph.callers(query, file_path=file_path, limit=limit)
+                    if direction == "callers"
+                    else graph.callees(query, file_path=file_path, limit=limit)
+                )
+            XcodeIndexCommands._echo(result)
+        except (KeyError, ValueError) as exc:
+            raise click.ClickException(str(exc)) from exc
+
+    @staticmethod
+    @click.command("callers", help="Return direct callers with every retained compiler call site.")
+    @click.argument("query")
+    @click.argument("project", type=click.Path(exists=True, file_okay=False), default=os.getcwd(), required=False)
+    @click.option("--database", type=click.Path(dir_okay=False), default=None)
+    @click.option("--file", "file_path", default=None, help="Disambiguate the queried symbol by source file.")
+    @click.option("--limit", type=click.IntRange(min=1), default=200, show_default=True)
+    def callers(query: str, project: str, database: str | None, file_path: str | None, limit: int) -> None:
+        XcodeIndexCommands._direct_query("callers", query, project, database, file_path, limit)
+
+    @staticmethod
+    @click.command("callees", help="Return direct callees with every retained compiler call site.")
+    @click.argument("query")
+    @click.argument("project", type=click.Path(exists=True, file_okay=False), default=os.getcwd(), required=False)
+    @click.option("--database", type=click.Path(dir_okay=False), default=None)
+    @click.option("--file", "file_path", default=None, help="Disambiguate the queried symbol by source file.")
+    @click.option("--limit", type=click.IntRange(min=1), default=200, show_default=True)
+    def callees(query: str, project: str, database: str | None, file_path: str | None, limit: int) -> None:
+        XcodeIndexCommands._direct_query("callees", query, project, database, file_path, limit)
+
+    @staticmethod
+    @click.command("impact", help="Walk the incoming or outgoing compiler call graph.")
+    @click.argument("query")
+    @click.argument("project", type=click.Path(exists=True, file_okay=False), default=os.getcwd(), required=False)
+    @click.option("--database", type=click.Path(dir_okay=False), default=None)
+    @click.option("--file", "file_path", default=None)
+    @click.option("--direction", type=click.Choice(["callers", "callees"]), default="callers", show_default=True)
+    @click.option("--depth", type=click.IntRange(min=0), default=3, show_default=True)
+    @click.option("--limit", type=click.IntRange(min=1), default=1000, show_default=True)
+    def impact(
+        query: str,
+        project: str,
+        database: str | None,
+        file_path: str | None,
+        direction: str,
+        depth: int,
+        limit: int,
+    ) -> None:
+        service = XcodeIndexCommands._service(project)
+        try:
+            with service.graph(database) as graph:
+                result = graph.impact(query, direction=direction, depth=depth, file_path=file_path, limit=limit)
+            XcodeIndexCommands._echo(result)
+        except (KeyError, ValueError) as exc:
+            raise click.ClickException(str(exc)) from exc
+
+    @staticmethod
+    @click.command("trace", help="Find bounded direct-call paths between two compiler symbols.")
+    @click.argument("start")
+    @click.argument("end")
+    @click.argument("project", type=click.Path(exists=True, file_okay=False), default=os.getcwd(), required=False)
+    @click.option("--database", type=click.Path(dir_okay=False), default=None)
+    @click.option("--start-file", default=None)
+    @click.option("--end-file", default=None)
+    @click.option("--max-depth", type=click.IntRange(min=1), default=8, show_default=True)
+    @click.option("--max-paths", type=click.IntRange(min=1), default=100, show_default=True)
+    def trace(
+        start: str,
+        end: str,
+        project: str,
+        database: str | None,
+        start_file: str | None,
+        end_file: str | None,
+        max_depth: int,
+        max_paths: int,
+    ) -> None:
+        service = XcodeIndexCommands._service(project)
+        try:
+            with service.graph(database) as graph:
+                result = graph.trace(
+                    start,
+                    end,
+                    max_depth=max_depth,
+                    start_file=start_file,
+                    end_file=end_file,
+                    max_paths=max_paths,
+                )
+            XcodeIndexCommands._echo(result)
+        except (KeyError, ValueError) as exc:
+            raise click.ClickException(str(exc)) from exc
+
+
 _mode = ModeCommands()
 _context = ContextCommands()
 _project = ProjectCommands()
 _config = SerenaConfigCommands()
 _tools = ToolCommands()
+_daemon = DaemonCommands()
 _prompts = PromptCommands()
 _memories = MemoryCommands()
+_xcode_index = XcodeIndexCommands()
 
 # Expose so we can use this as an entrypoint
 top_level = TopLevelCommands()
 
 # needed for the help script to work - register all subcommands to the top-level group
-for subgroup in (_mode, _context, _project, _config, _tools, _prompts, _memories):
+for subgroup in (_mode, _context, _project, _config, _tools, _daemon, _prompts, _memories, _xcode_index):
     top_level.add_command(subgroup)

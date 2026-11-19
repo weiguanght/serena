@@ -73,6 +73,18 @@ ignore_all_files_in_gitignore: true
 # Maps the language key to the options.
 # The settings are considered only if the project is trusted (see global configuration to define trusted projects).
 # See https://oraios.github.io/serena/02-usage/050_configuration.html#language-server-specific-settings
+# Swift/Xcode example:
+#   swift:
+#     use_xcode_toolchain: true
+#     index_store_path: "/path/to/DerivedData/App/Index.noindex/DataStore"
+#     index_database_path: "/path/to/DerivedData/App/Index.noindex/DB"
+#     index_prefix_map: ["/private/tmp=/tmp"]
+#     auto_discover_xcode_index_store: true
+#     index_graph_path: "cache/xcode-index.sqlite3"
+# C/Objective-C example:
+#   cpp:
+#     use_xcode_toolchain: true
+#     compile_commands_dir: ".serena"
 ls_specific_settings: {}
 
 # list of workspace folder paths (LSP backend only).

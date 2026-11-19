@@ -4,12 +4,12 @@ import PackageDescription
 let package = Package(
     name: "test_repo",
     products: [
-        .library(
+        .executable(
             name: "test_repo",
             targets: ["test_repo"]),
     ],
     targets: [
-        .target(
+        .executableTarget(
             name: "test_repo",
             dependencies: [],
             path: "src"),

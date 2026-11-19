@@ -1,15 +1,19 @@
 import logging
 import os
+import shutil
+import subprocess
+import sys
 import time
 from collections.abc import Hashable
 
 from overrides import override
 
 from solidlsp import ls_types
+from solidlsp.dependency_provider import LanguageServerDependencyProvider, LanguageServerDependencyProviderBaseCommand
+from solidlsp.indexstore import discover_index_store_path
 from solidlsp.ls import RawDocumentSymbol, SolidLanguageServer
 from solidlsp.ls_config import LanguageServerConfig
 from solidlsp.ls_types import SymbolKind
-from solidlsp.lsp_protocol_handler.server import ProcessLaunchInfo
 from solidlsp.settings import SolidLSPSettings
 from solidlsp.util.subprocess_util import subprocess_run
 
@@ -19,6 +23,14 @@ log = logging.getLogger(__name__)
 class SourceKitLSP(SolidLanguageServer):
     """
     Provides Swift specific instantiation of the LanguageServer class using sourcekit-lsp.
+
+    The ``swift`` LS-specific settings support ``ls_path``, ``ls_base_cmd``,
+    ``ls_args`` and ``ls_extra_args``.  On macOS, ``use_xcode_toolchain`` can
+    select the active Xcode toolchain through ``xcrun``.  The IndexStore flags
+    ``index_store_path``, ``index_database_path`` and ``index_prefix_map`` are
+    translated to sourcekit-lsp command-line options.  Set
+    ``auto_discover_xcode_index_store`` to discover the newest matching
+    DerivedData store when no explicit path is configured.
     """
 
     @override
@@ -31,10 +43,10 @@ class SourceKitLSP(SolidLanguageServer):
         return super().is_ignored_dirname(dirname) or dirname in [".build", ".swiftpm", "node_modules", "dist", "build"]
 
     @staticmethod
-    def _get_sourcekit_lsp_version() -> str:
+    def _get_sourcekit_lsp_version(executable: str = "sourcekit-lsp") -> str:
         """Get the installed sourcekit-lsp version or raise error if sourcekit was not found."""
         try:
-            result = subprocess_run(["sourcekit-lsp", "-h"], capture_output=True, text=True, check=False)
+            result = subprocess_run([executable, "-h"], capture_output=True, text=True, check=False)
             if result.returncode == 0:
                 return result.stdout.strip()
             else:
@@ -46,15 +58,77 @@ class SourceKitLSP(SolidLanguageServer):
             ) from e
 
     def __init__(self, config: LanguageServerConfig, repository_root_path: str, solidlsp_settings: SolidLSPSettings):
-        sourcekit_version = self._get_sourcekit_lsp_version()
-        log.info(f"Starting sourcekit lsp with version: {sourcekit_version}")
-
-        super().__init__(
-            config, repository_root_path, ProcessLaunchInfo(cmd="sourcekit-lsp", cwd=repository_root_path), "swift", solidlsp_settings
-        )
+        super().__init__(config, repository_root_path, None, "swift", solidlsp_settings)
+        log.info("Starting sourcekit lsp with configured executable")
         self.request_id = 0
         self._did_sleep_before_requesting_references = False
         self._initialization_timestamp: float | None = None
+
+    def _create_dependency_provider(self) -> LanguageServerDependencyProvider:
+        return self.DependencyProvider(self._custom_settings, self._ls_resources_dir, self.repository_root_path)
+
+    class DependencyProvider(LanguageServerDependencyProviderBaseCommand):
+        """Build a sourcekit-lsp command from project-specific settings."""
+
+        def __init__(self, custom_settings: SolidLSPSettings.CustomLSSettings, ls_resources_dir: str, project_root: str):
+            super().__init__(custom_settings, ls_resources_dir)
+            self._project_root = project_root
+
+        def _create_default_base_command(self) -> list[str]:
+            configured_path = self._custom_settings.get("sourcekit_lsp_path")
+            if isinstance(configured_path, str) and configured_path:
+                return [configured_path]
+
+            if sys.platform == "darwin" and self._custom_settings.get("use_xcode_toolchain", True):
+                xcrun = shutil.which("xcrun")
+                if xcrun:
+                    try:
+                        result = subprocess_run([xcrun, "--find", "sourcekit-lsp"], capture_output=True, text=True, check=False)
+                        if result.returncode == 0 and result.stdout.strip():
+                            return [result.stdout.strip()]
+                    except (OSError, subprocess.SubprocessError) as exc:
+                        log.debug("Could not find Xcode sourcekit-lsp through xcrun: %s", exc)
+
+            path = shutil.which("sourcekit-lsp")
+            if path is None:
+                raise RuntimeError("Could not find sourcekit-lsp. Install Xcode or Swift sourcekit-lsp and configure swift.ls_path.")
+            return [path]
+
+        def _create_launch_command_from_base_command(self, base_command: list[str]) -> list[str]:
+            args = list(base_command)
+
+            # Explicit compiler index locations take precedence over discovery.
+            index_store_path = self._custom_settings.get("index_store_path")
+            if index_store_path is None and self._custom_settings.get("auto_discover_xcode_index_store", False):
+                index_store_path = discover_index_store_path(self._project_root)
+                if index_store_path:
+                    log.info("Discovered Xcode IndexStore at %s", index_store_path)
+                else:
+                    log.warning("No matching Xcode IndexStore was discovered for %s", self._project_root)
+            if isinstance(index_store_path, str) and index_store_path:
+                args.extend(["-index-store-path", self._resolve_project_path(index_store_path)])
+
+            index_database_path = self._custom_settings.get("index_database_path")
+            if isinstance(index_database_path, str) and index_database_path:
+                args.extend(["-index-db-path", self._resolve_project_path(index_database_path)])
+
+            prefix_map = self._custom_settings.get("index_prefix_map")
+            if isinstance(prefix_map, dict):
+                prefix_map = [f"{source}={destination}" for source, destination in prefix_map.items()]
+            if isinstance(prefix_map, list | tuple):
+                for mapping in prefix_map:
+                    if not isinstance(mapping, str) or "=" not in mapping:
+                        raise ValueError("swift.index_prefix_map entries must use 'remote=local' syntax")
+                    remote, local = mapping.split("=", 1)
+                    args.extend(["-index-prefix-map", f"{remote}={self._resolve_project_path(local)}"])
+
+            return args
+
+        def _resolve_project_path(self, value: str) -> str:
+            path = os.path.expandvars(os.path.expanduser(value))
+            if not os.path.isabs(path):
+                path = os.path.join(self._project_root, path)
+            return os.path.realpath(path)
 
     @override
     def _document_symbols_cache_fingerprint(self) -> Hashable:
@@ -359,13 +433,13 @@ class SourceKitLSP(SolidLanguageServer):
             time.sleep(remaining_delay)
             self._did_sleep_before_requesting_references = True
 
-        # Get references with retry logic for CI stability
+        # Get references with retry logic for SourceKit's asynchronous index updates.
         references = super().request_references(relative_file_path, line, column)
 
-        # In CI, if no references found, retry once after additional delay
-        if os.getenv("CI") and not references:
-            log.info("No references found in CI - retrying after additional 5s delay")
-            time.sleep(5)
+        if not references:
+            retry_delay = 5 if os.getenv("CI") else 2
+            log.info("No references found - retrying after an additional %ss delay", retry_delay)
+            time.sleep(retry_delay)
             references = super().request_references(relative_file_path, line, column)
 
         return references

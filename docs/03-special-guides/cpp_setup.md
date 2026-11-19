@@ -12,6 +12,12 @@ Serena supports two C/C++ language servers, clangd (default) and ccls.
 Both have their pros and cons and require a properly configured `compile_commands.json` 
 for cross-file reference finding, see below for details.
 
+On macOS, set `cpp.use_xcode_toolchain: true` when the project must use the
+clangd shipped with the selected Xcode toolchain. The compile database still
+needs to contain the real Xcode SDK, header-map, module, macro and target
+arguments; selecting Xcode clangd alone cannot reconstruct an omitted build
+configuration.
+
 Your project must have a `compile_commands.json` file at the repository root. 
 This file is essential for correct parsing and cross-file reference finding.
 

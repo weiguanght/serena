@@ -72,3 +72,16 @@ def compute_language_server_support_composition(
 
     # convert to percentages relative to recognised source files only
     return {ls_id: round(count / recognised_files * 100, 2) for ls_id, count in ls_file_counts.items()}
+
+
+def contains_swift_and_clang_implementation_sources(repo_path: str) -> bool:
+    """Return whether a project contains Swift and a C-family implementation file."""
+    has_swift = False
+    has_clang_source = False
+    for file_path in find_all_non_ignored_files(repo_path):
+        suffix = os.path.splitext(file_path)[1].lower()
+        has_swift = has_swift or suffix == ".swift"
+        has_clang_source = has_clang_source or suffix in {".c", ".cc", ".cp", ".cpp", ".cxx", ".m", ".mm"}
+        if has_swift and has_clang_source:
+            return True
+    return False

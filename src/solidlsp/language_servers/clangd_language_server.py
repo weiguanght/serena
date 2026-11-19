@@ -2,6 +2,8 @@ import hashlib
 import json
 import logging
 import os
+import shutil
+import sys
 import threading
 from collections.abc import Hashable
 from typing import Any
@@ -13,6 +15,7 @@ from solidlsp.ls import LanguageServerDependencyProvider, LanguageServerDependen
 from solidlsp.ls_config import LanguageServerConfig
 from solidlsp.ls_exceptions import SolidLSPException
 from solidlsp.settings import SolidLSPSettings
+from solidlsp.util.subprocess_util import subprocess_run
 
 from .common import RuntimeDependency, RuntimeDependencyCollection, is_unreal_engine_project
 
@@ -32,6 +35,8 @@ class ClangdLanguageServer(SolidLanguageServer):
           ``compile_commands.json`` if needed.
         - clangd_version: Override the pinned Clangd version downloaded by Serena
           (default: the bundled Serena version).
+        - use_xcode_toolchain: On macOS, use ``xcrun --find clangd`` instead of
+          Serena's downloaded clangd (default: false).
     """
 
     @staticmethod
@@ -86,6 +91,9 @@ class ClangdLanguageServer(SolidLanguageServer):
             cpp_settings.get("clangd_version"),
             cpp_settings.get("ls_path"),
             cpp_settings.get("compile_commands_dir"),
+            cpp_settings.get("use_xcode_toolchain"),
+            cpp_settings.get("ls_args"),
+            cpp_settings.get("ls_extra_args"),
             self._compile_commands_fingerprint(),
         )
 
@@ -224,7 +232,25 @@ class ClangdLanguageServer(SolidLanguageServer):
             """
             Setup runtime dependencies for ClangdLanguageServer and return the path to the executable.
             """
-            import shutil
+            if sys.platform == "darwin" and self._custom_settings.get("use_xcode_toolchain", False):
+                configured_toolchain = self._custom_settings.get("xcode_toolchain_path")
+                if isinstance(configured_toolchain, str) and configured_toolchain:
+                    candidate = os.path.join(configured_toolchain, "usr", "bin", "clangd")
+                    if os.path.isfile(candidate):
+                        return candidate
+                    raise FileNotFoundError(f"Xcode clangd was not found at configured toolchain path: {candidate}")
+
+                xcrun = shutil.which("xcrun")
+                if xcrun:
+                    result = subprocess_run([xcrun, "--find", "clangd"], capture_output=True, text=True, check=False)
+                    if result.returncode == 0 and result.stdout.strip():
+                        candidate = result.stdout.strip()
+                        if os.path.isfile(candidate):
+                            log.info("Using Xcode clangd at %s", candidate)
+                            return candidate
+                raise FileNotFoundError(
+                    "Xcode clangd was requested but xcrun could not locate it. Install Xcode or set cpp.ls_path to a clangd executable."
+                )
 
             clangd_version = self._custom_settings.get("clangd_version", "19.1.2")
             default_version = clangd_version == "19.1.2"
