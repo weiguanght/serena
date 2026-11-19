@@ -106,6 +106,24 @@ class TestProjectConfigAutogenerate:
 
         assert config.language_servers == [LanguageServerId.PYTHON]
 
+    def test_autogenerate_enables_swift_and_cpp_for_mixed_xcode_sources(self):
+        """Test that mixed Swift/Objective-C projects keep both semantic servers."""
+        (self.project_path / "App.swift").write_text("struct App {}")
+        (self.project_path / "Legacy.m").write_text("void legacy(void) {}")
+
+        config = ProjectConfig.autogenerate(self.project_path, self.serena_config, save_to_disk=False)
+
+        assert set(config.language_servers) == {LanguageServerId.SWIFT, LanguageServerId.CPP}
+
+    def test_autogenerate_does_not_enable_cpp_for_swift_headers_only(self):
+        """Test that a bridging header alone does not start clangd automatically."""
+        (self.project_path / "App.swift").write_text("struct App {}")
+        (self.project_path / "Bridge.h").write_text("void bridge(void);")
+
+        config = ProjectConfig.autogenerate(self.project_path, self.serena_config, save_to_disk=False)
+
+        assert config.language_servers == [LanguageServerId.SWIFT]
+
     def test_autogenerate_saves_to_disk(self):
         """Test that autogenerate can save the configuration to disk."""
         # Create a Go file

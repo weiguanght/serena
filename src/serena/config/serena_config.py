@@ -35,7 +35,7 @@ from serena.constants import (
     SERENA_FILE_ENCODING,
     SERENA_MANAGED_DIR_NAME,
 )
-from serena.util.inspection import compute_language_server_support_composition
+from serena.util.inspection import compute_language_server_support_composition, contains_swift_and_clang_implementation_sources
 from serena.util.text_utils import GlobMatcher
 from serena.util.yaml import YamlCommentNormalisation, load_yaml, normalise_yaml_comments, save_yaml, transfer_yaml_comments
 from solidlsp.ls_config import LanguageServerIdLike, LanguageServerRegistry
@@ -416,6 +416,29 @@ class ProjectConfig(SharedConfig, ModeSelectionDefinitionWithAddedModes):
                     if enable:
                         language_servers_to_use.append(ls_id)
                 print()
+
+        # Swift and Objective-C/C++ commonly live in the same Xcode target.
+        # Keep both semantic servers enabled automatically so `.swift` files
+        # use SourceKit-LSP while `.m`/`.mm` files use clangd; asking Serena to
+        # choose only the dominant language loses cross-language navigation.
+        has_mixed_xcode_sources = (
+            LanguageServerId.SWIFT in ls_composition
+            and LanguageServerId.CPP in ls_composition
+            and contains_swift_and_clang_implementation_sources(project_root)
+        )
+        if has_mixed_xcode_sources:
+            other_languages = [
+                language for language in language_servers_to_use if language not in {LanguageServerId.SWIFT, LanguageServerId.CPP}
+            ]
+            language_servers_to_use = [LanguageServerId.SWIFT, LanguageServerId.CPP, *other_languages]
+            log.info("Detected mixed Swift/Objective-C project; enabling swift and cpp language servers")
+        elif LanguageServerId.SWIFT in ls_composition and LanguageServerId.CPP in language_servers_to_use:
+            # Header files are routed through clangd and can otherwise make a
+            # Swift project appear predominantly C++.  Without a C-family
+            # implementation file, SourceKit-LSP is the useful primary server.
+            language_servers_to_use = [
+                LanguageServerId.SWIFT if language == LanguageServerId.CPP else language for language in language_servers_to_use
+            ]
 
         log.info("Using language servers: %s", language_servers_to_use)
         return language_servers_to_use

@@ -1841,6 +1841,51 @@ class SolidLanguageServer(ABC):
         request = self.ReferencesLocationRequest(self, relative_file_path, line, column)
         return request.execute()
 
+    def request_call_hierarchy(
+        self,
+        relative_file_path: str,
+        line: int,
+        column: int,
+        *,
+        direction: str,
+    ) -> list[dict[str, Any]]:
+        """Request live incoming or outgoing calls for a source position.
+
+        The result is intentionally the language server's current semantic
+        view.  It complements, rather than merges with, persisted IndexStore
+        evidence so callers can distinguish unsaved/live results from the last
+        successful Xcode build snapshot.
+
+        :param relative_file_path: project-relative source file path.
+        :param line: zero-based LSP line.
+        :param column: zero-based LSP character offset.
+        :param direction: ``incoming`` or ``outgoing``.
+        :return: raw LSP call hierarchy entries, each annotated with its
+            prepared root item.
+        """
+        if direction not in {"incoming", "outgoing"}:
+            raise ValueError("direction must be 'incoming' or 'outgoing'")
+        if not self.server_started:
+            raise SolidLSPException("Language Server not started")
+
+        self._pre_open_for_cross_file_references()
+        with self.open_file(relative_file_path):
+            self._wait_for_cross_file_references_if_needed()
+            params = cast(
+                lsp_types.CallHierarchyPrepareParams,
+                self._create_text_document_position_params(relative_file_path, line, column),
+            )
+            prepared_items = self.server.send.prepare_call_hierarchy(params) or []
+            result: list[dict[str, Any]] = []
+            for item in prepared_items:
+                if direction == "incoming":
+                    calls = self.server.send.incoming_calls({"item": item}) or []
+                else:
+                    calls = self.server.send.outgoing_calls({"item": item}) or []
+                for call in calls:
+                    result.append({"root": item, "call": call})
+            return result
+
     def retrieve_full_file_content(self, file_path: str) -> str:
         """
         Retrieve the full content of the given file.

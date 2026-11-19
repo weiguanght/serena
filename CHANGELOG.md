@@ -2,6 +2,9 @@
 
 Status of the `main` branch. Changes prior to the next official version change will appear here.
 
+* Add an optional local Xcode IndexStore graph tier with SQLite persistence and CLI/agent queries for callers, callees, impact and traces. SourceKit-LSP and clangd remain the live semantic tier; Xcode toolchain and IndexStore paths are configurable.
+* Add a native Rust-supervised, non-MCP daemon CLI with serialized project startup, reliable worker/LSP shutdown, and readiness reporting after initial language-server activation.
+
 # v2.1.0 (2026-10-19)
 
 * General:
